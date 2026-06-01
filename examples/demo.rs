@@ -66,7 +66,7 @@ fn load_system_font(backend: &mut WgpuBackend) -> Option<FontHandle> {
 /// Build the demo scene: rounded rect, outlined rect, circle, a translucent
 /// overlapping rect (z-order), a thin rect used as a "line", a textured quad,
 /// and a couple text runs.
-fn build_scene(tex: TexHandle, font: Option<FontHandle>) -> DrawScene {
+fn build_scene(tex: TexHandle, font: Option<FontHandle>, angle: f32) -> DrawScene {
     let mut scene = DrawScene::new();
 
     // 1. solid rounded rect (lower-left)
@@ -84,7 +84,14 @@ fn build_scene(tex: TexHandle, font: Option<FontHandle>) -> DrawScene {
         Color { r: 0.95, g: 0.85, b: 0.25, a: 1.0 },
         6.0,
     );
-    scene.set_transform(r2, tform(360.0, 80.0));
+    scene.set_transform(
+        r2,
+        Transform {
+            translation: Vec2 { x: 360.0, y: 100.0 },
+            rotation_rad: -0.18, // static tilt: shows stroke under rotation
+            scale: Vec2 { x: 1.0, y: 1.0 },
+        },
+    );
     scene.set_z_height(r2, 1.0);
     scene.set_outline(
         r2,
@@ -120,15 +127,27 @@ fn build_scene(tex: TexHandle, font: Option<FontHandle>) -> DrawScene {
     scene.set_transform(line, tform(80.0, 320.0));
     scene.set_z_height(line, 2.0);
 
-    // 6. textured quad (checkerboard), full-texture src region
+    // 6. textured quad (checkerboard), spinning about its center. A group node
+    //    holds the rotation; the quad is offset by -half so it spins in place
+    //    (demonstrates group-transform composition + animated rotation).
+    let spinner = scene.create_empty();
+    scene.set_transform(
+        spinner,
+        Transform {
+            translation: Vec2 { x: 440.0, y: 460.0 },
+            rotation_rad: angle,
+            scale: Vec2 { x: 1.0, y: 1.0 },
+        },
+    );
+    scene.set_z_height(spinner, 1.0);
     let t = scene.create_tex(
         tex,
         Vec2 { x: 160.0, y: 160.0 },
         Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 },
         Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
     );
-    scene.set_transform(t, tform(360.0, 380.0));
-    scene.set_z_height(t, 1.0);
+    scene.set_transform(t, tform(-80.0, -80.0));
+    scene.add_child(spinner, t);
 
     // 7. text
     if let Some(font) = font {
@@ -167,6 +186,7 @@ struct App {
     backend: Option<WgpuBackend>,
     tex: Option<TexHandle>,
     font: Option<FontHandle>,
+    frame: u32,
 }
 
 impl App {
@@ -176,6 +196,7 @@ impl App {
             backend: None,
             tex: None,
             font: None,
+            frame: 0,
         }
     }
 }
@@ -222,9 +243,11 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                self.frame = self.frame.wrapping_add(1);
+                let angle = self.frame as f32 * 0.02;
                 let tex = TexHandle(self.tex.as_ref().unwrap().0);
                 let font = self.font.as_ref().map(|f| FontHandle(f.0));
-                let scene = build_scene(tex, font);
+                let scene = build_scene(tex, font, angle);
                 let draws = render_to_draws(&scene);
                 backend.render(&draws);
                 if let Some(w) = &self.window {
