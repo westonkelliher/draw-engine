@@ -2,8 +2,8 @@
 
 A 2D draw engine, built on [wgpu](https://wgpu.rs) that will be utilized both in a game engine and webpage DOM.
 
-> **Status:** design / spec stage. The `specs/` files are typed prototypes
-> (`unimplemented!()` bodies) defining the interface; there is no implementation yet.
+> **Status:** v1 implemented. The `specs/` files are the original typed prototypes;
+> the working crate lives in `src/` (`cargo test`, `cargo run --example demo`).
 
 ## Approach
 
@@ -39,13 +39,14 @@ normalized depth so a future depth-buffer backend can reorder freely.
 
 | Path | What |
 |------|------|
-| `specs/draw_layer.rs` | Retained scene + pure `render_to_draws` + `DrawCall` |
-| `specs/wgpu_backend.rs` | wgpu backend (one draw per call, no batcher) |
-| `specs/batcher_stretch.rs` | Stretch goal: instanced batching + required layer changes |
-| `reference/` | wgpu tutorial takeaways informing the design |
+| `src/draw_layer.rs` | Retained scene + pure `render_to_draws` + `DrawCall` (+ unit tests) |
+| `src/wgpu_backend.rs` | wgpu 29 backend (one draw per call, no batcher) |
+| `src/shaders/` | WGSL: SDF shape (rounded-rect/circle, fill+stroke), tex, user-shader prelude |
+| `examples/demo.rs` | winit window drawing rects/circle/line/text/texture with z-ordering |
+| `specs/`, `reference/` | Original typed prototypes + wgpu tutorial takeaways |
 | `DRAW_ENGINE_SPEC.rs` | Earlier immediate-mode sketch (superseded by the retained approach) |
 
 ## Roadmap
 
-- [ ] Implement the three layers.
+- [x] Implement the three layers (pure scene, `render_to_draws`, wgpu backend).
 - [ ] Stretch: insert a pure `batch()` pass and enable instanced + depth-tested rendering (see `specs/batcher_stretch.rs`).
