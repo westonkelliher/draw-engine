@@ -102,7 +102,7 @@ fn build_scene(tex: TexHandle, font: Option<FontHandle>, angle: f32) -> DrawScen
     );
 
     // 3. circle
-    let c = scene.create_circle(
+    let c = scene.create_circ(
         70.0,
         Color { r: 0.85, g: 0.30, b: 0.45, a: 1.0 },
     );
@@ -151,7 +151,7 @@ fn build_scene(tex: TexHandle, font: Option<FontHandle>, angle: f32) -> DrawScen
 
     // 7. text
     if let Some(font) = font {
-        let title = scene.create_text(
+        let title = scene.create_writ(
             FontHandle(font.0),
             "draw_engine — wgpu backend".to_string(),
             34.0,
@@ -160,7 +160,7 @@ fn build_scene(tex: TexHandle, font: Option<FontHandle>, angle: f32) -> DrawScen
         scene.set_transform(title, tform(70.0, 24.0));
         scene.set_z_height(title, 5.0);
 
-        let sub = scene.create_text(
+        let sub = scene.create_writ(
             FontHandle(font.0),
             "rects · circles · stroke · texture · z-order".to_string(),
             20.0,

@@ -42,6 +42,7 @@ impl Transform {
     pub fn to_affine(&self) -> Affine2 { unimplemented!() }
 }
 
+// TODO: we should probably use 3d matrices to represent 2d tranforms
 /// Baked 2D affine transform (2x2 linear + translation). Output-side only;
 /// `render_to_draws` multiplies these down the tree so each DrawCall is absolute.
 pub struct Affine2 { pub m: [[f32; 2]; 2], pub t: [f32; 2] }
@@ -68,15 +69,15 @@ pub struct ShaderHandle(pub u32);
 pub struct NodeId(pub u32);
 
 /// What a node draws. `Empty` draws nothing — it is a pure transform/grouping
-/// container (the "group"). Shape content (Rect/Circle) may carry an outline.
+/// container (the "group"). Shape content (Rect/Circ) may carry an outline.
 /// Stored internally per node; constructed via the `create_*` methods.
 pub enum Content {
     Empty,
     Rect { size: Vec2, color: Color, corner_radius: f32, outline: Option<Outline> },
-    Circle { radius: f32, color: Color, outline: Option<Outline> },
+    Circ { radius: f32, color: Color, outline: Option<Outline> },
     Tex { tex: TexHandle, size: Vec2, src: Rect, tint: Color },
-    Text { font: FontHandle, text: String, size_px: f32, color: Color },
-    Shader { shader: ShaderHandle, size: Vec2, params: Vec<u8> },
+    Writ { font: FontHandle, text: String, size_px: f32, color: Color },
+    Shad { shader: ShaderHandle, size: Vec2, params: Vec<u8> },
 }
 
 // ---------------------------------------------------------------------------
@@ -105,8 +106,8 @@ impl DrawScene {
     /// its local 0,0). `corner_radius` rounds corners (0.0 = sharp).
     pub fn create_rect(&mut self, size: Vec2, color: Color, corner_radius: f32) -> NodeId { unimplemented!() }
 
-    /// Create a filled-circle node of `radius` (pixels) centered at local origin.
-    pub fn create_circle(&mut self, radius: f32, color: Color) -> NodeId { unimplemented!() }
+    /// Create a filled-circ node of `radius` (pixels) centered at local origin.
+    pub fn create_circ(&mut self, radius: f32, color: Color) -> NodeId { unimplemented!() }
 
     /// Create an image-quad node of `size` (pixels). `src` selects a 0..1 UV
     /// sub-region of the texture; `tint` multiplies the sampled color.
@@ -115,11 +116,11 @@ impl DrawScene {
     /// Create a text-run node. `size_px` is glyph pixel height. Layout into glyph
     /// quads is deferred to the backend (which owns the glyph atlas); this layer
     /// stores the string + font + size verbatim to stay pure.
-    pub fn create_text(&mut self, font: FontHandle, text: String, size_px: f32, color: Color) -> NodeId { unimplemented!() }
+    pub fn create_writ(&mut self, font: FontHandle, text: String, size_px: f32, color: Color) -> NodeId { unimplemented!() }
 
     /// Create a user fragment-shader-quad node of `size` (pixels). `params` is
     /// opaque bytes forwarded to the shader as a uniform block.
-    pub fn create_shader(&mut self, shader: ShaderHandle, size: Vec2, params: Vec<u8>) -> NodeId { unimplemented!() }
+    pub fn create_shad(&mut self, shader: ShaderHandle, size: Vec2, params: Vec<u8>) -> NodeId { unimplemented!() }
 
     // --- manipulation (uniform over all nodes) ---
 
@@ -130,14 +131,16 @@ impl DrawScene {
     /// descendant's effective z_height).
     pub fn set_z_height(&mut self, id: NodeId, z_height: f32) { unimplemented!() }
 
-    /// Add/replace the outline on a shape node (Rect/Circle). No-op if the node's
-    /// content is Empty/Tex/Text/Shader. Emitted as a separate stroke DrawCall
+    /// Add/replace the outline on a shape node (Rect/Circ). No-op if the node's
+    /// content is Empty/Tex/Writ/Shad. Emitted as a separate stroke DrawCall
     /// after the fill.
     pub fn set_outline(&mut self, id: NodeId, outline: Outline) { unimplemented!() }
 
     /// Toggle whether a node (and thus its subtree) is emitted by
     /// `render_to_draws`.
     pub fn set_visible(&mut self, id: NodeId, visible: bool) { unimplemented!() }
+
+    // TODO: add rotation, translation, shear, etc.
 
     // --- tree structure ---
 
@@ -178,7 +181,7 @@ pub enum DrawCall {
         tint: Color,
         z: f32,
     },
-    Text {
+    Writ {
         transform: Affine2,
         font: FontHandle,
         text: String,
@@ -186,7 +189,7 @@ pub enum DrawCall {
         color: Color,
         z: f32,
     },
-    Shader {
+    Shad {
         transform: Affine2,
         size: Vec2,
         shader: ShaderHandle,
@@ -198,7 +201,8 @@ pub enum DrawCall {
 /// Geometry of a shape DrawCall (size/radius are pre-transform local units).
 pub enum Shape {
     Rect { size: Vec2, corner_radius: f32 },
-    Circle { radius: f32 },
+    Circ { radius: f32 },
+    // TODO: Line, RRect, Arc, Elip
 }
 
 // ---------------------------------------------------------------------------

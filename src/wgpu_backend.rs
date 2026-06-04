@@ -578,7 +578,7 @@ impl WgpuBackend {
                             size,
                             corner_radius,
                         } => (0.0_f32, *corner_radius, [size.x, size.y]),
-                        Shape::Circle { radius } => {
+                        Shape::Circ { radius } => {
                             (1.0_f32, *radius, [radius * 2.0, radius * 2.0])
                         }
                     };
@@ -589,7 +589,7 @@ impl WgpuBackend {
                     // For circle the quad's local origin must be the top-left of
                     // the bounding box; the baked transform's translation refers
                     // to the circle center, so shift back by radius.
-                    let t = if matches!(shape, Shape::Circle { .. }) {
+                    let t = if matches!(shape, Shape::Circ { .. }) {
                         offset_translation(transform, -radius, -radius)
                     } else {
                         [transform.t[0], transform.t[1]]
@@ -629,7 +629,7 @@ impl WgpuBackend {
                         tex: tex.0,
                     });
                 }
-                DrawCall::Shader {
+                DrawCall::Shad {
                     transform,
                     size,
                     shader,
@@ -652,7 +652,7 @@ impl WgpuBackend {
                         shader: shader.0,
                     });
                 }
-                DrawCall::Text {
+                DrawCall::Writ {
                     transform,
                     font,
                     text,

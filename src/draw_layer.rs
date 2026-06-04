@@ -126,16 +126,16 @@ pub struct ShaderHandle(pub u32);
 pub struct NodeId(pub u32);
 
 /// What a node draws. `Empty` draws nothing — it is a pure transform/grouping
-/// container (the "group"). Shape content (Rect/Circle) may carry an outline.
+/// container (the "group"). Shape content (Rect/Circ) may carry an outline.
 /// Stored internally per node; constructed via the `create_*` methods.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Content {
     Empty,
     Rect { size: Vec2, color: Color, corner_radius: f32, outline: Option<Outline> },
-    Circle { radius: f32, color: Color, outline: Option<Outline> },
+    Circ { radius: f32, color: Color, outline: Option<Outline> },
     Tex { tex: TexHandle, size: Vec2, src: Rect, tint: Color },
-    Text { font: FontHandle, text: String, size_px: f32, color: Color },
-    Shader { shader: ShaderHandle, size: Vec2, params: Vec<u8> },
+    Writ { font: FontHandle, text: String, size_px: f32, color: Color },
+    Shad { shader: ShaderHandle, size: Vec2, params: Vec<u8> },
 }
 
 // ---------------------------------------------------------------------------
@@ -234,8 +234,8 @@ impl DrawScene {
     }
 
     /// Create a filled-circle node of `radius` (pixels) centered at local origin.
-    pub fn create_circle(&mut self, radius: f32, color: Color) -> NodeId {
-        self.push(Content::Circle { radius, color, outline: None })
+    pub fn create_circ(&mut self, radius: f32, color: Color) -> NodeId {
+        self.push(Content::Circ { radius, color, outline: None })
     }
 
     /// Create an image-quad node of `size` (pixels). `src` selects a 0..1 UV
@@ -247,14 +247,14 @@ impl DrawScene {
     /// Create a text-run node. `size_px` is glyph pixel height. Layout into glyph
     /// quads is deferred to the backend (which owns the glyph atlas); this layer
     /// stores the string + font + size verbatim to stay pure.
-    pub fn create_text(&mut self, font: FontHandle, text: String, size_px: f32, color: Color) -> NodeId {
-        self.push(Content::Text { font, text, size_px, color })
+    pub fn create_writ(&mut self, font: FontHandle, text: String, size_px: f32, color: Color) -> NodeId {
+        self.push(Content::Writ { font, text, size_px, color })
     }
 
     /// Create a user fragment-shader-quad node of `size` (pixels). `params` is
     /// opaque bytes forwarded to the shader as a uniform block.
-    pub fn create_shader(&mut self, shader: ShaderHandle, size: Vec2, params: Vec<u8>) -> NodeId {
-        self.push(Content::Shader { shader, size, params })
+    pub fn create_shad(&mut self, shader: ShaderHandle, size: Vec2, params: Vec<u8>) -> NodeId {
+        self.push(Content::Shad { shader, size, params })
     }
 
     // --- manipulation (uniform over all nodes) ---
@@ -274,14 +274,14 @@ impl DrawScene {
         }
     }
 
-    /// Add/replace the outline on a shape node (Rect/Circle). No-op if the node's
-    /// content is Empty/Tex/Text/Shader. Emitted as a separate stroke DrawCall
+    /// Add/replace the outline on a shape node (Rect/Circ). No-op if the node's
+    /// content is Empty/Tex/Writ/Shad. Emitted as a separate stroke DrawCall
     /// after the fill.
     pub fn set_outline(&mut self, id: NodeId, outline: Outline) {
         if let Some(n) = self.get_mut(id) {
             match &mut n.content {
                 Content::Rect { outline: o, .. } => *o = Some(outline),
-                Content::Circle { outline: o, .. } => *o = Some(outline),
+                Content::Circ { outline: o, .. } => *o = Some(outline),
                 _ => {} // no-op for Empty/Tex/Text/Shader
             }
         }
@@ -404,7 +404,7 @@ pub enum DrawCall {
         tint: Color,
         z: f32,
     },
-    Text {
+    Writ {
         transform: Affine2,
         font: FontHandle,
         text: String,
@@ -412,7 +412,7 @@ pub enum DrawCall {
         color: Color,
         z: f32,
     },
-    Shader {
+    Shad {
         transform: Affine2,
         size: Vec2,
         shader: ShaderHandle,
@@ -425,7 +425,7 @@ pub enum DrawCall {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Shape {
     Rect { size: Vec2, corner_radius: f32 },
-    Circle { radius: f32 },
+    Circ { radius: f32 },
 }
 
 // ---------------------------------------------------------------------------
@@ -547,14 +547,14 @@ fn emit_node(node: &Node, world: &Affine2, eff_z: f32, ti: u32, out: &mut Vec<Em
                 });
             }
         }
-        Content::Circle { radius, color, outline } => {
+        Content::Circ { radius, color, outline } => {
             out.push(Emitted {
                 z_height: eff_z,
                 traversal_index: ti,
                 sub_index: 0,
                 call: DrawCall::Shape {
                     transform: *world,
-                    shape: Shape::Circle { radius: *radius },
+                    shape: Shape::Circ { radius: *radius },
                     style: DrawStyle::Fill,
                     color: *color,
                     z: 0.0,
@@ -567,7 +567,7 @@ fn emit_node(node: &Node, world: &Affine2, eff_z: f32, ti: u32, out: &mut Vec<Em
                     sub_index: 1,
                     call: DrawCall::Shape {
                         transform: *world,
-                        shape: Shape::Circle { radius: *radius },
+                        shape: Shape::Circ { radius: *radius },
                         style: DrawStyle::Stroke { thickness: o.thickness },
                         color: o.color,
                         z: 0.0,
@@ -590,12 +590,12 @@ fn emit_node(node: &Node, world: &Affine2, eff_z: f32, ti: u32, out: &mut Vec<Em
                 },
             });
         }
-        Content::Text { font, text, size_px, color } => {
+        Content::Writ { font, text, size_px, color } => {
             out.push(Emitted {
                 z_height: eff_z,
                 traversal_index: ti,
                 sub_index: 0,
-                call: DrawCall::Text {
+                call: DrawCall::Writ {
                     transform: *world,
                     font: *font,
                     text: text.clone(),
@@ -605,12 +605,12 @@ fn emit_node(node: &Node, world: &Affine2, eff_z: f32, ti: u32, out: &mut Vec<Em
                 },
             });
         }
-        Content::Shader { shader, size, params } => {
+        Content::Shad { shader, size, params } => {
             out.push(Emitted {
                 z_height: eff_z,
                 traversal_index: ti,
                 sub_index: 0,
-                call: DrawCall::Shader {
+                call: DrawCall::Shad {
                     transform: *world,
                     size: *size,
                     shader: *shader,
@@ -626,8 +626,8 @@ fn set_z(call: &mut DrawCall, value: f32) {
     match call {
         DrawCall::Shape { z, .. } => *z = value,
         DrawCall::Tex { z, .. } => *z = value,
-        DrawCall::Text { z, .. } => *z = value,
-        DrawCall::Shader { z, .. } => *z = value,
+        DrawCall::Writ { z, .. } => *z = value,
+        DrawCall::Shad { z, .. } => *z = value,
     }
 }
 
@@ -666,16 +666,16 @@ mod tests {
         match c {
             DrawCall::Shape { transform, .. } => transform,
             DrawCall::Tex { transform, .. } => transform,
-            DrawCall::Text { transform, .. } => transform,
-            DrawCall::Shader { transform, .. } => transform,
+            DrawCall::Writ { transform, .. } => transform,
+            DrawCall::Shad { transform, .. } => transform,
         }
     }
     fn call_z(c: &DrawCall) -> f32 {
         match c {
             DrawCall::Shape { z, .. } => *z,
             DrawCall::Tex { z, .. } => *z,
-            DrawCall::Text { z, .. } => *z,
-            DrawCall::Shader { z, .. } => *z,
+            DrawCall::Writ { z, .. } => *z,
+            DrawCall::Shad { z, .. } => *z,
         }
     }
 
@@ -863,11 +863,11 @@ mod tests {
     #[test]
     fn set_outline_noop_on_non_shape() {
         let mut scene = DrawScene::new();
-        let t = scene.create_text(FontHandle(0), "hi".into(), 12.0, red());
+        let t = scene.create_writ(FontHandle(0), "hi".into(), 12.0, red());
         scene.set_outline(t, Outline { thickness: 1.0, color: red() });
         let draws = render_to_draws(&scene);
         assert_eq!(draws.len(), 1, "text + outline should still be one call");
-        assert!(matches!(draws[0], DrawCall::Text { .. }));
+        assert!(matches!(draws[0], DrawCall::Writ { .. }));
     }
 
     #[test]
