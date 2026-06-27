@@ -1,16 +1,6 @@
-//! wgpu backend layer (NO batcher).
-//!
-//! Consumes the `Vec<DrawCall>` produced by `render_to_draws` and executes it on
-//! the GPU. This version is deliberately simple: it issues **one GPU draw per
-//! DrawCall**, in the order given (painter's algorithm). No instancing, no
-//! batching, no atlas packing. Correctness over performance.
-//!
-//! It owns all GPU state and all real resources; the draw layer only holds the
-//! handles this layer hands out (`TexHandle` / `FontHandle` / `ShaderHandle`).
-//!
-//! Z-ordering: because `render_to_draws` returns the calls already sorted
-//! back-to-front, this backend simply paints in order. No depth buffer is used
-//! (paint order already yields correct layering). `DrawCall::z` is ignored.
+//! wgpu backend (no batcher): one GPU draw per DrawCall, painted in the given
+//! back-to-front order (no depth buffer; `DrawCall::z` is ignored). Owns all GPU
+//! state and the resources behind the handles it hands out.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,10 +10,7 @@ use crate::draw_layer::{
     Color, DrawCall, DrawStyle, FontHandle, Shape, ShaderHandle, TexHandle, Vec2,
 };
 
-// ---------------------------------------------------------------------------
 // Per-frame and per-draw uniform layouts (std140-friendly: vec2 pairs / vec4s).
-// ---------------------------------------------------------------------------
-
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ScreenUniform {
@@ -32,8 +19,8 @@ struct ScreenUniform {
     _pad: f32,
 }
 
-/// 32 floats = 128 bytes; shared layout used by shape, tex and shader pipelines
-/// so a single per-draw uniform buffer + dynamic offset works for all of them.
+/// 128 bytes; shared by shape, tex and shader pipelines so one per-draw uniform
+/// buffer + dynamic offset works for all of them.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct DrawUniform {
@@ -51,10 +38,6 @@ impl DrawUniform {
     const SIZE: u64 = std::mem::size_of::<DrawUniform>() as u64;
 }
 
-// ---------------------------------------------------------------------------
-// Owned GPU resources.
-// ---------------------------------------------------------------------------
-
 struct TextureRes {
     bind_group: wgpu::BindGroup,
 }
@@ -64,7 +47,6 @@ struct ShaderRes {
 }
 
 struct FontRes {
-    /// font id within glyphon's font database (cosmic-text fontdb).
     id: glyphon::fontdb::ID,
 }
 
@@ -497,8 +479,7 @@ impl WgpuBackend {
     }
 
     pub fn measure_text(&self, font: FontHandle, text: &str, size_px: f32) -> Vec2 {
-        // FontSystem mutation is required by cosmic-text shaping; do it on a clone
-        // of the shared db so `&self` stays honest.
+        // Shaping needs a mutable FontSystem; clone the shared db so `&self` holds.
         let mut fs = glyphon::FontSystem::new_with_locale_and_db(
             self.font_system.locale().to_string(),
             self.font_system.db().clone(),
@@ -511,12 +492,11 @@ impl WgpuBackend {
         measure_buffer(&buffer)
     }
 
-    /// Build cosmic-text `Attrs` that pin to the loaded font face (by id) when
-    /// available, otherwise fall back to a sans-serif family.
+    /// `Attrs` pinned to the loaded font face, falling back to sans-serif.
     fn attrs_for(&self, font: FontHandle) -> glyphon::Attrs<'static> {
         if let Some(res) = self.fonts.get(font.0 as usize) {
             if let Some(face) = self.font_system.db().face(res.id) {
-                // leak a stable family name string for 'static attrs lifetime
+                // leak a stable family name for the 'static lifetime
                 let name: &'static str =
                     Box::leak(face.families[0].0.clone().into_boxed_str());
                 return glyphon::Attrs::new().family(glyphon::Family::Name(name));
@@ -543,8 +523,7 @@ impl WgpuBackend {
         self.queue
             .write_buffer(&self.screen_buffer, 0, bytemuck::bytes_of(&screen));
 
-        // 2. build the per-draw uniform array; record the kind & dynamic offset
-        //    for each non-text draw so we can play them back in the render pass.
+        // 2. build the per-draw uniform array + each non-text draw's dynamic offset.
         let stride = align_up(DrawUniform::SIZE, self.uniform_align);
         enum Op {
             Shape { offset: u64 },
@@ -586,9 +565,8 @@ impl WgpuBackend {
                         DrawStyle::Fill => (0.0_f32, 0.0_f32),
                         DrawStyle::Stroke { thickness } => (1.0_f32, *thickness),
                     };
-                    // For circle the quad's local origin must be the top-left of
-                    // the bounding box; the baked transform's translation refers
-                    // to the circle center, so shift back by radius.
+                    // Circle transform points at the center; shift to the quad's
+                    // top-left bounding-box origin.
                     let t = if matches!(shape, Shape::Circ { .. }) {
                         offset_translation(transform, -radius, -radius)
                     } else {
@@ -821,7 +799,7 @@ fn align_up(v: u64, align: u64) -> u64 {
 }
 
 fn offset_translation(a: &crate::draw_layer::Affine2, dx: f32, dy: f32) -> [f32; 2] {
-    // world translation of a local point (dx,dy) offset: t + M * (dx,dy)
+    // t + M * (dx,dy)
     [
         a.t[0] + a.m[0][0] * dx + a.m[0][1] * dy,
         a.t[1] + a.m[1][0] * dx + a.m[1][1] * dy,

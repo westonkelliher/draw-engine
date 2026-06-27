@@ -1,11 +1,5 @@
-//! Runnable demo for the wgpu draw-engine backend.
-//!
-//! Opens a winit window, builds a small retained `DrawScene`, flattens it with
-//! `render_to_draws`, and paints it via `WgpuBackend`. Continuous redraw.
-//!
-//! NOTE: this exercises the public API. The draw_layer *bodies* may still be
-//! `unimplemented!()` while that layer is in progress — in that case the demo
-//! will panic at runtime, but it compiles against the frozen type signatures.
+//! Runnable demo: opens a winit window, builds a `DrawScene`, flattens it with
+//! `render_to_draws`, and paints it via `WgpuBackend` with continuous redraw.
 
 use std::sync::Arc;
 
@@ -23,7 +17,7 @@ use winit::window::{Window, WindowId};
 const W: u32 = 960;
 const H: u32 = 640;
 
-/// Procedurally build an 8x8 RGBA checkerboard texture (no image crate).
+/// Procedural RGBA checkerboard texture (no image crate).
 fn checkerboard(cells: u32, px: u32) -> (Vec<u8>, u32) {
     let size = cells * px;
     let mut data = vec![0u8; (size * size * 4) as usize];
@@ -63,13 +57,12 @@ fn load_system_font(backend: &mut WgpuBackend) -> Option<FontHandle> {
     None
 }
 
-/// Build the demo scene: rounded rect, outlined rect, circle, a translucent
-/// overlapping rect (z-order), a thin rect used as a "line", a textured quad,
-/// and a couple text runs.
+/// Build the demo scene: rounded rect, outlined rect, circle, translucent
+/// overlap (z-order), a thin "line" rect, a spinning textured quad, and text.
 fn build_scene(tex: TexHandle, font: Option<FontHandle>, angle: f32) -> DrawScene {
     let mut scene = DrawScene::new();
 
-    // 1. solid rounded rect (lower-left)
+    // solid rounded rect (lower-left)
     let r1 = scene.create_rect(
         Vec2 { x: 220.0, y: 140.0 },
         Color { r: 0.20, g: 0.55, b: 0.85, a: 1.0 },
@@ -78,7 +71,7 @@ fn build_scene(tex: TexHandle, font: Option<FontHandle>, angle: f32) -> DrawScen
     scene.set_transform(r1, tform(80.0, 380.0));
     scene.set_z_height(r1, 1.0);
 
-    // 2. outlined (stroke) rect
+    // outlined (stroke) rect
     let r2 = scene.create_rect(
         Vec2 { x: 200.0, y: 120.0 },
         Color { r: 0.95, g: 0.85, b: 0.25, a: 1.0 },
@@ -88,7 +81,7 @@ fn build_scene(tex: TexHandle, font: Option<FontHandle>, angle: f32) -> DrawScen
         r2,
         Transform {
             translation: Vec2 { x: 360.0, y: 100.0 },
-            rotation_rad: -0.18, // static tilt: shows stroke under rotation
+            rotation_rad: -0.18, // tilt: shows stroke under rotation
             scale: Vec2 { x: 1.0, y: 1.0 },
         },
     );
@@ -101,7 +94,7 @@ fn build_scene(tex: TexHandle, font: Option<FontHandle>, angle: f32) -> DrawScen
         },
     );
 
-    // 3. circle
+    // circle
     let c = scene.create_circ(
         70.0,
         Color { r: 0.85, g: 0.30, b: 0.45, a: 1.0 },
@@ -109,7 +102,7 @@ fn build_scene(tex: TexHandle, font: Option<FontHandle>, angle: f32) -> DrawScen
     scene.set_transform(c, tform(720.0, 180.0));
     scene.set_z_height(c, 1.0);
 
-    // 4. translucent rect overlapping the circle (drawn on top -> z-order proof)
+    // translucent rect overlapping the circle (drawn on top -> z-order proof)
     let ov = scene.create_rect(
         Vec2 { x: 180.0, y: 180.0 },
         Color { r: 0.20, g: 0.95, b: 0.55, a: 0.45 },
@@ -118,7 +111,7 @@ fn build_scene(tex: TexHandle, font: Option<FontHandle>, angle: f32) -> DrawScen
     scene.set_transform(ov, tform(640.0, 120.0));
     scene.set_z_height(ov, 3.0);
 
-    // 5. a "line": a thin, long rect
+    // a "line": a thin, long rect
     let line = scene.create_rect(
         Vec2 { x: 300.0, y: 4.0 },
         Color { r: 0.9, g: 0.9, b: 0.95, a: 1.0 },
@@ -127,9 +120,8 @@ fn build_scene(tex: TexHandle, font: Option<FontHandle>, angle: f32) -> DrawScen
     scene.set_transform(line, tform(80.0, 320.0));
     scene.set_z_height(line, 2.0);
 
-    // 6. textured quad (checkerboard), spinning about its center. A group node
-    //    holds the rotation; the quad is offset by -half so it spins in place
-    //    (demonstrates group-transform composition + animated rotation).
+    // textured quad spinning about its center: a group holds the rotation, the
+    // quad is offset by -half so it spins in place (group-transform composition).
     let spinner = scene.create_empty();
     scene.set_transform(
         spinner,
@@ -149,7 +141,7 @@ fn build_scene(tex: TexHandle, font: Option<FontHandle>, angle: f32) -> DrawScen
     scene.set_transform(t, tform(-80.0, -80.0));
     scene.add_child(spinner, t);
 
-    // 7. text
+    // text
     if let Some(font) = font {
         let title = scene.create_writ(
             FontHandle(font.0),

@@ -1,38 +1,23 @@
-//! Draw-calls engine — retained object layer + `render_to_draws`.
+//! Retained scene tree + `render_to_draws`, a pure function that flattens it
+//! into a paint-ordered `Vec<DrawCall>` of plain data (no wgpu types).
 //!
-//! Two sub-layers:
-//!   1. Retained scene: a tree of uniform nodes (each draws something, or
-//!      nothing — an "empty" node is a pure transform/group container).
-//!   2. `render_to_draws`: a PURE function that flattens the tree into a flat,
-//!      paint-ordered `Vec<DrawCall>` of plain data (no wgpu types).
+//! Coordinates are 2D pixel-space (origin top-left, +y down); transforms are 2D
+//! affine. GPU resources are referenced by opaque handles the backend owns.
 //!
-//! Coordinates are 2D pixel-space; transforms are 2D affine. The retained layer
-//! holds no GPU state — textures/fonts/shaders are referenced by opaque handles
-//! that the wgpu backend (separate spec) owns.
-//!
-//! Z-ORDERING (resolved entirely here, see `render_to_draws`):
-//!   primary   = accumulated `z_height` (ancestor z_height sums into children),
-//!   secondary = node order (stable pre-order traversal of the tree),
-//!   tertiary  = per-node sub-order (fill before outline).
-//! Convention: higher effective z_height draws on top / in front.
+//! Z-ordering keys (ascending = back→front): accumulated `z_height` (summed down
+//! the tree), then pre-order traversal index, then per-node sub-order (fill
+//! before outline).
 
-// ---------------------------------------------------------------------------
-// Shared value types
-// ---------------------------------------------------------------------------
-
-/// RGBA color, linear 0.0..=1.0 components.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Color { pub r: f32, pub g: f32, pub b: f32, pub a: f32 }
 
-/// Pixel-space 2D vector / point (origin top-left, +y down).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Vec2 { pub x: f32, pub y: f32 }
 
-/// Pixel-space axis-aligned size or rect region.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect { pub x: f32, pub y: f32, pub w: f32, pub h: f32 }
 
-/// Authoring transform for an object or group. Composed onto children for groups.
+/// Authoring transform; composed onto children for groups.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Transform {
     pub translation: Vec2,
@@ -40,7 +25,6 @@ pub struct Transform {
     pub scale: Vec2,
 }
 impl Transform {
-    /// Identity transform (no translation/rotation, unit scale).
     pub fn identity() -> Self {
         Transform {
             translation: Vec2 { x: 0.0, y: 0.0 },
@@ -48,14 +32,10 @@ impl Transform {
             scale: Vec2 { x: 1.0, y: 1.0 },
         }
     }
-    /// Collapse to a baked affine matrix for flattening.
-    ///
-    /// Order: scale, then rotate, then translate (translation * rotation * scale).
+    /// Bake to affine. Order: scale, then rotate, then translate.
     pub fn to_affine(&self) -> Affine2 {
         let (s, c) = self.rotation_rad.sin_cos();
-        // rotation * scale, as a column-major 2x2 stored row-by-row in `m`.
-        // rotation R = [[c, -s], [s, c]]; scale S = diag(sx, sy).
-        // R*S = [[c*sx, -s*sy], [s*sx, c*sy]].
+        // R*S where R = [[c,-s],[s,c]], S = diag(sx,sy).
         let sx = self.scale.x;
         let sy = self.scale.y;
         Affine2 {
@@ -68,8 +48,7 @@ impl Transform {
     }
 }
 
-/// Baked 2D affine transform (2x2 linear + translation). Output-side only;
-/// `render_to_draws` multiplies these down the tree so each DrawCall is absolute.
+/// Baked 2D affine transform (2x2 linear + translation).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Affine2 { pub m: [[f32; 2]; 2], pub t: [f32; 2] }
 impl Affine2 {
@@ -77,14 +56,9 @@ impl Affine2 {
         Affine2 { m: [[1.0, 0.0], [0.0, 1.0]], t: [0.0, 0.0] }
     }
     /// `self * rhs` — apply `rhs` then `self` (parent * child).
-    ///
-    /// As homogeneous 3x3 matrices: result = self * rhs, so a point `p` maps to
-    /// `self * (rhs * p)`. Linear part = self.m * rhs.m; translation =
-    /// self.m * rhs.t + self.t.
     pub fn compose(&self, rhs: &Affine2) -> Affine2 {
         let a = &self.m;
         let b = &rhs.m;
-        // m = a * b (row-major matrix product)
         let m = [
             [
                 a[0][0] * b[0][0] + a[0][1] * b[1][0],
@@ -95,7 +69,6 @@ impl Affine2 {
                 a[1][0] * b[0][1] + a[1][1] * b[1][1],
             ],
         ];
-        // t = a * rhs.t + self.t
         let t = [
             a[0][0] * rhs.t[0] + a[0][1] * rhs.t[1] + self.t[0],
             a[1][0] * rhs.t[0] + a[1][1] * rhs.t[1] + self.t[1],
@@ -104,14 +77,10 @@ impl Affine2 {
     }
 }
 
-/// Outline/stroke styling for a shape object.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Outline { pub thickness: f32, pub color: Color }
 
-// ---------------------------------------------------------------------------
-// Resource handles (owned by the wgpu backend; opaque here)
-// ---------------------------------------------------------------------------
-
+// Resource handles (owned by the wgpu backend; opaque here).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TexHandle(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -119,15 +88,10 @@ pub struct FontHandle(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShaderHandle(pub u32);
 
-/// Handle to any node in the scene. There is a single node type: every node has
-/// a transform, a z_height, a content (what it draws, possibly nothing), and a
-/// list of children. A "group" is just a node whose content is `Content::Empty`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u32);
 
-/// What a node draws. `Empty` draws nothing — it is a pure transform/grouping
-/// container (the "group"). Shape content (Rect/Circ) may carry an outline.
-/// Stored internally per node; constructed via the `create_*` methods.
+/// What a node draws. `Empty` draws nothing (pure transform/group container).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Content {
     Empty,
@@ -138,11 +102,6 @@ pub enum Content {
     Shad { shader: ShaderHandle, size: Vec2, params: Vec<u8> },
 }
 
-// ---------------------------------------------------------------------------
-// Retained scene
-// ---------------------------------------------------------------------------
-
-/// Internal per-node record stored in the arena.
 struct Node {
     transform: Transform,
     z_height: f32,
@@ -150,18 +109,14 @@ struct Node {
     visible: bool,
     children: Vec<NodeId>,
     parent: Option<NodeId>,
-    /// Monotonically increasing insertion order index (assigned at creation).
-    /// Retained per spec; traversal order is also fixed by `children` ordering.
     #[allow(dead_code)]
     order: u64,
-    /// Whether this arena slot is live (false once removed).
     alive: bool,
 }
 
-/// Retained-mode draw scene: a tree of uniform nodes under an implicit root
-/// node. All `create_*` calls attach to the root unless re-parented. Every node
-/// can have children (even shape/tex/etc. nodes), and its transform + z_height
-/// propagate to its whole subtree.
+/// Retained-mode scene: a tree of uniform nodes under an implicit root. New
+/// nodes attach to the root unless re-parented; transform + z_height propagate
+/// to the whole subtree.
 pub struct DrawScene {
     nodes: Vec<Node>,
     root: NodeId,
@@ -169,8 +124,6 @@ pub struct DrawScene {
 }
 
 impl DrawScene {
-    /// Create an empty scene with an implicit root node (Empty content, identity
-    /// transform, z_height 0).
     pub fn new() -> Self {
         let root = Node {
             transform: Transform::identity(),
@@ -198,7 +151,6 @@ impl DrawScene {
         self.nodes.get_mut(Self::idx(id)).filter(|n| n.alive)
     }
 
-    /// Insert a freshly built node under the root and return its handle.
     fn push(&mut self, content: Content) -> NodeId {
         let order = self.insertion_counter;
         self.insertion_counter += 1;
@@ -218,46 +170,38 @@ impl DrawScene {
         id
     }
 
-    // --- node creation (returns a NodeId; new nodes start under the root) ---
+    // Node creation. New nodes start under the root.
 
-    /// Create an empty node — draws nothing, exists to transform/group its
-    /// children. This is the "pure group". (Any node can have children; this is
-    /// just the contentless one.)
+    /// Empty node — draws nothing, exists to transform/group its children.
     pub fn create_empty(&mut self) -> NodeId {
         self.push(Content::Empty)
     }
 
-    /// Create a filled-rectangle node of `size` (pixels, pre-transform, origin at
-    /// its local 0,0). `corner_radius` rounds corners (0.0 = sharp).
+    /// Filled rect of `size` (origin at local 0,0). `corner_radius` 0 = sharp.
     pub fn create_rect(&mut self, size: Vec2, color: Color, corner_radius: f32) -> NodeId {
         self.push(Content::Rect { size, color, corner_radius, outline: None })
     }
 
-    /// Create a filled-circle node of `radius` (pixels) centered at local origin.
+    /// Filled circle of `radius` centered at local origin.
     pub fn create_circ(&mut self, radius: f32, color: Color) -> NodeId {
         self.push(Content::Circ { radius, color, outline: None })
     }
 
-    /// Create an image-quad node of `size` (pixels). `src` selects a 0..1 UV
-    /// sub-region of the texture; `tint` multiplies the sampled color.
+    /// Image quad. `src` selects a 0..1 UV sub-region; `tint` multiplies it.
     pub fn create_tex(&mut self, tex: TexHandle, size: Vec2, src: Rect, tint: Color) -> NodeId {
         self.push(Content::Tex { tex, size, src, tint })
     }
 
-    /// Create a text-run node. `size_px` is glyph pixel height. Layout into glyph
-    /// quads is deferred to the backend (which owns the glyph atlas); this layer
-    /// stores the string + font + size verbatim to stay pure.
+    /// Text run; `size_px` is glyph pixel height. Layout is deferred to the
+    /// backend (which owns the glyph atlas), so this stays pure.
     pub fn create_writ(&mut self, font: FontHandle, text: String, size_px: f32, color: Color) -> NodeId {
         self.push(Content::Writ { font, text, size_px, color })
     }
 
-    /// Create a user fragment-shader-quad node of `size` (pixels). `params` is
-    /// opaque bytes forwarded to the shader as a uniform block.
+    /// Fragment-shader quad. `params` is opaque bytes forwarded as a uniform.
     pub fn create_shad(&mut self, shader: ShaderHandle, size: Vec2, params: Vec<u8>) -> NodeId {
         self.push(Content::Shad { shader, size, params })
     }
-
-    // --- manipulation (uniform over all nodes) ---
 
     /// Replace a node's local transform (composed onto its whole subtree).
     pub fn set_transform(&mut self, id: NodeId, t: Transform) {
@@ -266,63 +210,50 @@ impl DrawScene {
         }
     }
 
-    /// Set a node's local `z_height` (primary ordering key; added to every
-    /// descendant's effective z_height).
+    /// Set local `z_height` (added to every descendant's effective z_height).
     pub fn set_z_height(&mut self, id: NodeId, z_height: f32) {
         if let Some(n) = self.get_mut(id) {
             n.z_height = z_height;
         }
     }
 
-    /// Add/replace the outline on a shape node (Rect/Circ). No-op if the node's
-    /// content is Empty/Tex/Writ/Shad. Emitted as a separate stroke DrawCall
-    /// after the fill.
+    /// Add/replace the outline on a shape node (Rect/Circ). No-op otherwise.
+    /// Emitted as a separate stroke DrawCall after the fill.
     pub fn set_outline(&mut self, id: NodeId, outline: Outline) {
         if let Some(n) = self.get_mut(id) {
             match &mut n.content {
                 Content::Rect { outline: o, .. } => *o = Some(outline),
                 Content::Circ { outline: o, .. } => *o = Some(outline),
-                _ => {} // no-op for Empty/Tex/Text/Shader
+                _ => {}
             }
         }
     }
 
-    /// Toggle whether a node (and thus its subtree) is emitted by
-    /// `render_to_draws`.
+    /// Toggle whether a node (and its subtree) is emitted.
     pub fn set_visible(&mut self, id: NodeId, visible: bool) {
         if let Some(n) = self.get_mut(id) {
             n.visible = visible;
         }
     }
 
-    // --- tree structure ---
-
-    /// Re-parent `child` under `parent`. Affects transform composition,
-    /// accumulated z_height, and traversal (secondary) order. Any node may be a
-    /// parent. Errors/no-ops if it would create a cycle.
+    /// Re-parent `child` under `parent`. No-op if it would create a cycle, if
+    /// either is dead, or if `child` is the root.
     pub fn add_child(&mut self, parent: NodeId, child: NodeId) {
-        // Both must be live, and child must not be the root.
         if self.get(parent).is_none() || self.get(child).is_none() {
             return;
         }
-        if child == self.root {
-            return; // root cannot be re-parented
+        if child == self.root || parent == child {
+            return;
         }
-        if parent == child {
-            return; // trivial cycle
-        }
-        // Cycle guard: child must not be an ancestor of parent (i.e. parent must
-        // not be in child's subtree).
+        // Cycle guard: parent must not be in child's subtree.
         if self.is_descendant_or_self(child, parent) {
             return;
         }
-        // Detach from old parent.
         if let Some(old) = self.get(child).and_then(|n| n.parent) {
             if let Some(op) = self.get_mut(old) {
                 op.children.retain(|c| *c != child);
             }
         }
-        // Attach to new parent.
         if let Some(n) = self.get_mut(child) {
             n.parent = Some(parent);
         }
@@ -345,19 +276,14 @@ impl DrawScene {
 
     /// Remove a node and its entire subtree (invalidates those handles).
     pub fn remove(&mut self, id: NodeId) {
-        if id == self.root {
-            return; // never remove the implicit root
-        }
-        if self.get(id).is_none() {
+        if id == self.root || self.get(id).is_none() {
             return;
         }
-        // Detach from parent.
         if let Some(parent) = self.get(id).and_then(|n| n.parent) {
             if let Some(p) = self.get_mut(parent) {
                 p.children.retain(|c| *c != id);
             }
         }
-        // Kill the subtree.
         let mut stack = vec![id];
         while let Some(cur) = stack.pop() {
             if let Some(n) = self.get_mut(cur) {
@@ -374,19 +300,12 @@ impl Default for DrawScene {
     fn default() -> Self { Self::new() }
 }
 
-// ---------------------------------------------------------------------------
-// Flattened output: DrawCall
-// ---------------------------------------------------------------------------
-
-/// Fill vs. stroke for a shape DrawCall.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawStyle { Fill, Stroke { thickness: f32 } }
 
-/// A single backend-agnostic draw command. Plain data — NO wgpu types.
-/// `transform` is the fully-baked world affine; `z` is the resolved normalized
-/// depth in 0.0..1.0 (monotonic with final paint order; larger = in front).
-/// The returned Vec is already sorted back-to-front, so a no-batcher backend can
-/// paint in order and ignore `z` if it wishes.
+/// A backend-agnostic draw command (plain data, no wgpu types). `transform` is
+/// the baked world affine; `z` is normalized depth in 0..1, monotonic with paint
+/// order (larger = in front). The returned Vec is already sorted back-to-front.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DrawCall {
     Shape {
@@ -421,18 +340,14 @@ pub enum DrawCall {
     },
 }
 
-/// Geometry of a shape DrawCall (size/radius are pre-transform local units).
+/// Geometry of a shape DrawCall (pre-transform local units).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Shape {
     Rect { size: Vec2, corner_radius: f32 },
     Circ { radius: f32 },
 }
 
-// ---------------------------------------------------------------------------
-// The pure flattening function
-// ---------------------------------------------------------------------------
-
-/// Intermediate record carrying a draw call plus its composite sort key.
+/// A draw call plus its composite sort key.
 struct Emitted {
     z_height: f32,
     traversal_index: u32,
@@ -440,31 +355,19 @@ struct Emitted {
     call: DrawCall,
 }
 
-/// PURE: flatten the scene tree into a paint-ordered `Vec<DrawCall>`.
-///
-/// Algorithm:
-///   1. Pre-order traversal of the tree, accumulating world affine
-///      (parent.compose(child)) and effective z_height (sum down the path).
-///      The traversal index is each node's secondary key.
-///   2. For each visible node emit its fill call (Empty nodes emit nothing but
-///      still propagate transform + z_height); if it has an outline emit a
-///      stroke call too, with a higher tertiary sub-index (outline after fill).
-///   3. Sort all emitted calls by the composite key
-///      (effective_z_height, traversal_index, sub_index), ascending = back→front.
-///   4. Stamp each call's `z` as its normalized rank (rank / count) so the value
-///      is a valid monotonic depth for any future depth-buffer/batcher backend.
-///
-/// No GPU, no I/O, deterministic — testable by asserting on the returned Vec.
+/// Flatten the scene tree into a paint-ordered `Vec<DrawCall>` (pure,
+/// deterministic). Pre-order DFS accumulates world affine and effective
+/// z_height; calls are then sorted by (z_height, traversal_index, sub_index)
+/// ascending, and each `z` is stamped as its normalized rank.
 pub fn render_to_draws(scene: &DrawScene) -> Vec<DrawCall> {
     let mut emitted: Vec<Emitted> = Vec::new();
     let mut traversal_index: u32 = 0;
 
-    // Iterative pre-order DFS. Stack holds (node, accumulated world affine,
-    // accumulated z_height). We push children in reverse so they pop in order.
+    // Stack holds (node, accumulated world affine, accumulated z_height).
     let root = scene.root;
     let root_world = match scene.get(root) {
         Some(n) if n.visible => n.transform.to_affine(),
-        _ => return Vec::new(), // root missing or invisible -> nothing
+        _ => return Vec::new(),
     };
     let root_z = scene.get(root).map(|n| n.z_height).unwrap_or(0.0);
 
@@ -475,7 +378,6 @@ pub fn render_to_draws(scene: &DrawScene) -> Vec<DrawCall> {
             Some(n) => n,
             None => continue,
         };
-        // Invisible nodes (and their subtrees) are skipped entirely.
         if !node.visible {
             continue;
         }
@@ -485,7 +387,7 @@ pub fn render_to_draws(scene: &DrawScene) -> Vec<DrawCall> {
 
         emit_node(node, &world, eff_z, ti, &mut emitted);
 
-        // Push children in reverse for left-to-right pre-order.
+        // Reverse so children pop in left-to-right pre-order.
         for &child in node.children.iter().rev() {
             if let Some(cn) = scene.get(child) {
                 let child_world = world.compose(&cn.transform.to_affine());
@@ -495,7 +397,6 @@ pub fn render_to_draws(scene: &DrawScene) -> Vec<DrawCall> {
         }
     }
 
-    // Sort back->front by (z_height, traversal_index, sub_index) ascending.
     emitted.sort_by(|a, b| {
         a.z_height
             .total_cmp(&b.z_height)
@@ -518,7 +419,7 @@ pub fn render_to_draws(scene: &DrawScene) -> Vec<DrawCall> {
 /// Emit fill (and optional stroke) draw calls for a single visible node.
 fn emit_node(node: &Node, world: &Affine2, eff_z: f32, ti: u32, out: &mut Vec<Emitted>) {
     match &node.content {
-        Content::Empty => { /* pure group: emits nothing */ }
+        Content::Empty => {}
         Content::Rect { size, color, corner_radius, outline } => {
             out.push(Emitted {
                 z_height: eff_z,

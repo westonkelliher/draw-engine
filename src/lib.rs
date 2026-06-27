@@ -1,12 +1,6 @@
 //! draw_engine — a 2D draw engine on wgpu.
 //!
-//! Retained-mode scene graph compiled to GPU draw calls through pure, testable
-//! layers:
-//!
-//! ```text
-//! DrawScene  --render_to_draws-->  Vec<DrawCall>  -->  WgpuBackend
-//!  (retained)        (pure)           (plain data)        (GPU)
-//! ```
+//! `DrawScene` --render_to_draws--> `Vec<DrawCall>` --> `WgpuBackend`.
 
 pub mod draw_layer;
 pub mod wgpu_backend;
